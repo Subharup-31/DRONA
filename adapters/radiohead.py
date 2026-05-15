@@ -13,6 +13,7 @@ from drona.schema import IncidentSignal as _DronaSignal
 
 # Import bench harness base class — available when running inside bench repo
 try:
+    # pyrefly: ignore [missing-import]
     from adapter import Adapter
 except ImportError:
     # Fallback: define minimal base if running outside bench repo
