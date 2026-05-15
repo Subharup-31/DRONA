@@ -68,8 +68,7 @@ class TemporalIndex:
                     anomaly_type = "trace_slowdown"
                     break
 
-        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if isinstance(ts, datetime) else str(ts)
-        return (ts_str, canonical_id, kind, json.dumps(event), is_anomaly, anomaly_type)
+        return (ts, canonical_id, kind, json.dumps(event), is_anomaly, anomaly_type)
 
     def insert_batch(self, rows: list[tuple]) -> None:
         """Batch-insert rows into DuckDB. Thread-safe."""

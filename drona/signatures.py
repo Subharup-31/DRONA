@@ -1,7 +1,8 @@
 # drona/signatures.py
 from __future__ import annotations
-from drona.schema import BehaviorPattern, TriggerType, SymptomType, PropagationDir
+from drona.schema import BehaviorPattern, TriggerType, SymptomType, PropagationDir, ServiceTier
 from drona.identity import IdentityLayer
+from drona.graph import ServiceGraph
 from datetime import datetime
 from dateutil.parser import parse as parse_dt
 import re
@@ -12,23 +13,43 @@ def extract_signature(
     anomalies: list[dict],
     identity_layer: IdentityLayer,
     deploy_ts: str | None = None,
+    graph: ServiceGraph | None = None,
 ) -> BehaviorPattern:
     """Extract a service-name-agnostic behavioral signature from events and anomalies."""
 
     # Step 1 — trigger_type
-    trigger_type = _detect_trigger(events)
+    trigger_type = _detect_trigger(events, anomalies)
 
     # Step 2 — symptom_sequence (ordered by anomaly timestamp, dedup consecutive)
     symptom_sequence = _build_symptom_sequence(anomalies)
 
-    # Step 3 — affected_service_count
-    affected_service_count = _count_affected_services(events, anomalies, identity_layer)
+    # Step 3 — epicentre_tier and propagation_direction
+    epicentre_tier = ServiceTier.UNKNOWN
+    propagation_direction = PropagationDir.ISOLATED
 
-    # Step 4 — propagation_direction
-    if affected_service_count == 1:
-        propagation_direction = PropagationDir.ISOLATED
-    else:
-        propagation_direction = PropagationDir.DOWNSTREAM
+    if anomalies and graph:
+        # Find first anomaly service
+        sorted_anomalies = sorted(anomalies, key=lambda a: a.get("event", {}).get("ts", ""))
+        first_svc = sorted_anomalies[0].get("event", {}).get("service") or sorted_anomalies[0].get("event", {}).get("svc")
+        if first_svc:
+            epicentre_cid = identity_layer.resolve(first_svc)
+            # Determine tier
+            up = len(graph.get_upstream(epicentre_cid))
+            down = len(graph.get_downstream(epicentre_cid))
+            if up == 0: epicentre_tier = ServiceTier.ROOT
+            elif down == 0: epicentre_tier = ServiceTier.LEAF
+            else: epicentre_tier = ServiceTier.MIDDLE
+
+            # Determine propagation direction
+            all_involved = {identity_layer.resolve(a.get("event", {}).get("service") or a.get("event", {}).get("svc")) 
+                            for a in anomalies if a.get("event", {}).get("service") or a.get("event", {}).get("svc")}
+            if len(all_involved) > 1:
+                # Check if moving downstream from epicentre
+                propagation_direction = PropagationDir.DOWNSTREAM
+                # Could refine more if needed
+    
+    # Step 4 — affected_service_count
+    affected_service_count = _count_affected_services(events, anomalies, identity_layer)
 
     # Step 5 — time_to_first_symptom_s
     time_to_first_symptom_s = _compute_time_to_first_symptom(anomalies, deploy_ts)
@@ -39,25 +60,33 @@ def extract_signature(
         affected_service_count=affected_service_count,
         propagation_direction=propagation_direction,
         time_to_first_symptom_s=time_to_first_symptom_s,
+        epicentre_tier=epicentre_tier,
     )
 
 
-def _detect_trigger(events: list[dict]) -> TriggerType:
+def _detect_trigger(events: list[dict], anomalies: list[dict]) -> TriggerType:
     """Determine trigger type from events."""
+    # 1. Deploys are high-confidence triggers
     for e in events:
         if e.get("kind") == "deploy":
             return TriggerType.DEPLOY
 
+    # 2. Dependency failures in logs
+    for e in events:
+        if e.get("kind") == "log":
+            msg = str(e.get("msg", "")).lower()
+            if any(w in msg for w in ("timeout", "connection refused", "unavailable", "unreachable")):
+                return TriggerType.DEPENDENCY_FAILURE
+
+    # 3. Explicit metric alerts
     for e in events:
         trigger = e.get("trigger", "")
         if isinstance(trigger, str) and "alert" in trigger.lower():
             return TriggerType.METRIC_ALERT
 
-    for e in events:
-        if e.get("kind") == "log":
-            msg = str(e.get("msg", "")).lower()
-            if any(w in msg for w in ("timeout", "connection refused", "unavailable")):
-                return TriggerType.DEPENDENCY_FAILURE
+    # 4. If an anomaly is the very first thing we see without a deploy
+    if anomalies:
+        return TriggerType.METRIC_ALERT
 
     return TriggerType.UNKNOWN
 
@@ -88,8 +117,10 @@ def _build_symptom_sequence(anomalies: list[dict]) -> list[SymptomType]:
                 raw_symptoms.append(SymptomType.UPSTREAM_TIMEOUT)
             else:
                 raw_symptoms.append(SymptomType.ERROR_RATE_SPIKE)
-        elif atype == "trace_slowdown":
+        elif atype == "trace_slowdown" or (atype == "metric_spike" and "slow" in str(event.get("name", "")).lower()):
             raw_symptoms.append(SymptomType.TRACE_SLOWDOWN)
+        elif atype == "metric_spike" and "conn" in str(event.get("name", "")).lower():
+            raw_symptoms.append(SymptomType.CONNECTION_DROP)
 
     # Dedup consecutive duplicates
     deduped: list[SymptomType] = []

@@ -2,10 +2,11 @@
 from __future__ import annotations
 from drona.schema import (
     IncidentMemory, BehaviorPattern, IncidentMatch, Remediation,
-    TriggerType, SymptomType, PropagationDir,
+    TriggerType, SymptomType, PropagationDir, ServiceTier,
 )
 from drona.signatures import extract_signature
 from drona.identity import IdentityLayer
+from drona.graph import ServiceGraph
 from dateutil.parser import parse as parse_dt
 from sklearn.linear_model import SGDClassifier
 from sklearn.preprocessing import StandardScaler
@@ -31,6 +32,12 @@ class IncrementalClassifier:
         PropagationDir.DOWNSTREAM: 1,
         PropagationDir.UPSTREAM: 2,
     }
+    _TIER_MAP = {
+        ServiceTier.ROOT: 0,
+        ServiceTier.MIDDLE: 1,
+        ServiceTier.LEAF: 2,
+        ServiceTier.UNKNOWN: 3,
+    }
 
     def __init__(self) -> None:
         self._clf = SGDClassifier(
@@ -45,7 +52,7 @@ class IncrementalClassifier:
         self._n_seen = 0
 
     def _encode(self, sig: BehaviorPattern) -> np.ndarray:
-        """Encode a BehaviorPattern as a fixed-length 8-dim numeric vector."""
+        """Encode a BehaviorPattern as a fixed-length 9-dim numeric vector."""
         syms = set(sig.symptom_sequence)
         return np.array([
             self._TRIGGER_MAP.get(sig.trigger_type, 3),
@@ -56,6 +63,7 @@ class IncrementalClassifier:
             1 if SymptomType.TRACE_SLOWDOWN in syms else 0,
             self._PROP_MAP.get(sig.propagation_direction, 1),
             min(sig.time_to_first_symptom_s, 600.0),
+            self._TIER_MAP.get(sig.epicentre_tier, 3),
         ], dtype=np.float64)
 
     def update(self, new_sig: BehaviorPattern, existing_sigs: list) -> None:
@@ -150,6 +158,7 @@ class MemoryStore:
         remediation_event: dict,
         anomalies: list[dict],
         identity_layer: IdentityLayer,
+        graph: ServiceGraph | None = None,
     ) -> IncidentMemory | None:
         """Close an incident and store it as memory."""
         with self._lock:
@@ -158,7 +167,7 @@ class MemoryStore:
                 return None
 
             sig = extract_signature(
-                state["events"], anomalies, identity_layer, state["deploy_ts"]
+                state["events"], anomalies, identity_layer, state["deploy_ts"], graph
             )
             target_svc = remediation_event.get("target", "")
             target_cid = (
@@ -209,12 +218,12 @@ class MemoryStore:
                 # Blend in classifier score if ready (improves Memory Evolution axis)
                 if self._clf.is_ready():
                     clf_score = self._clf.score(signature, mem.signature)
-                    # 80% LCS similarity + 20% classifier — classifier is supplementary
-                    blended = 0.80 * base_sim + 0.20 * clf_score
+                    # 65% LCS similarity + 35% classifier — classifier is now more influential
+                    blended = 0.65 * base_sim + 0.35 * clf_score
                 else:
                     blended = base_sim
 
-                if blended <= 0.25:
+                if blended <= 0.45:
                     continue
 
                 # G4: recency decay — half-life 3 simulated days, affects 30% of score

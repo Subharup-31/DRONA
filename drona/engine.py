@@ -121,7 +121,7 @@ class Engine:
                 anomalies = self._index.get_anomalies(
                     opened_ts - timedelta(minutes=10), ts
                 )
-                self._memory.close_incident(iid, event, anomalies, self._identity)
+                self._memory.close_incident(iid, event, anomalies, self._identity, self._graph)
 
         return self._index.build_row(cid, event, ts)
 
@@ -160,7 +160,7 @@ class Engine:
         deploy_ts = next(
             (e["ts"] for e in related if e.get("kind") == "deploy"), None
         )
-        sig = extract_signature(related, anomalies, self._identity, deploy_ts)
+        sig = extract_signature(related, anomalies, self._identity, deploy_ts, self._graph)
 
         # 5. Similar past incidents (topology-independent) — G4: query_ts for recency decay
         scored = self._memory.find_similar(sig, top_k=5, query_ts=signal.ts)
@@ -215,6 +215,18 @@ class Engine:
                 s += 3
             if k == "log":
                 s += 2
+            
+            # G6: Boost events in same service as signal (Epicentre focus)
+            svc = e.get("service") or e.get("svc")
+            if svc:
+                cid = self._identity.resolve(svc)
+                if signal.service and self._identity.resolve(signal.service) == cid:
+                    s += 5
+                # Also boost if it's a known neighbor in the graph
+                elif signal.service:
+                    sig_cid = self._identity.resolve(signal.service)
+                    if cid in self._graph.get_upstream(sig_cid) or cid in self._graph.get_downstream(sig_cid):
+                        s += 2
             return s
 
         seen: set = set()
