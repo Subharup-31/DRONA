@@ -73,12 +73,6 @@ class PropagationDir(str, Enum):
     DOWNSTREAM = "downstream"
     ISOLATED   = "isolated"
 
-class ServiceTier(str, Enum):
-    ROOT    = "root"     # Entry points (0 predecessors)
-    MIDDLE  = "middle"   # Intermediary
-    LEAF    = "leaf"     # End nodes (0 successors)
-    UNKNOWN = "unknown"
-
 @dataclass
 class BehaviorPattern:
     """Service-name-agnostic incident signature. No canonical_ids inside."""
@@ -87,37 +81,20 @@ class BehaviorPattern:
     affected_service_count:  int
     propagation_direction:   PropagationDir
     time_to_first_symptom_s: float
-    epicentre_tier:          ServiceTier = ServiceTier.UNKNOWN
 
     def similarity(self, other: BehaviorPattern) -> float:
-        """5-component weighted similarity. Returns 0.0–1.0."""
-        # 1. Trigger (30%) - HIGHLY DISCRIMINATIVE
-        if self.trigger_type != other.trigger_type:
-            return 0.0  # Mismatched triggers are almost never the same family
-        
-        score = 0.30
-        
-        # 2. Symptoms (30%)
-        lcs = _lcs_ratio(self.symptom_sequence, other.symptom_sequence)
-        score += 0.30 * lcs
-        
-        # 3. Epicentre Tier (20%) - Stable topological anchor
-        if self.epicentre_tier == other.epicentre_tier and self.epicentre_tier != ServiceTier.UNKNOWN:
-            score += 0.20
-        elif self.epicentre_tier == other.epicentre_tier:
-            score += 0.05
-            
-        # 4. Propagation (10%)
+        """4-component weighted similarity. Returns 0.0–1.0."""
+        score = 0.0
+        if self.trigger_type == other.trigger_type:
+            score += 0.30
+        score += 0.40 * _lcs_ratio(self.symptom_sequence, other.symptom_sequence)
         if self.propagation_direction == other.propagation_direction:
-            score += 0.10
-            
-        # 5. Timing (10%)
+            score += 0.20
         a, b = self.time_to_first_symptom_s, other.time_to_first_symptom_s
         if a > 0 and b > 0:
             ratio = max(a, b) / min(a, b)
-            if ratio < 2.5:
-                score += 0.10 * max(0.0, 1 - (ratio - 1) / 1.5)
-        
+            if ratio < 3.0:
+                score += 0.10 * max(0.0, 1 - (ratio - 1) / 2)
         return round(min(1.0, score), 4)
 
 
