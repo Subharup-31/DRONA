@@ -1,0 +1,8 @@
+version: "3.8"
+services:
+  drona:
+    build: .
+    environment:
+      - DRONA_LLM_BACKEND=template
+      - PYTHONPATH=/app
+    command: python self_check.py
