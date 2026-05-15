@@ -28,23 +28,34 @@ except ImportError:
 
 
 class Engine(Adapter):
-    """Thin shim mapping bench harness interface to drona Engine."""
+    """Thin shim mapping bench harness interface to drona Engine.
+
+    Key translations:
+    - Bench topology events use `from_` (with underscore); drona uses `from`.
+    - Bench CausalEdge uses `cause_event_id`/`effect_event_id` (str);
+      drona uses `cause_id`/`effect_id`.
+    - Bench CausalEdge.evidence is str; drona stores list[Event].
+    - Bench IncidentMatch uses `incident_id`; drona uses `past_incident_id`.
+    """
 
     def __init__(self) -> None:
         self._e = _Engine()
 
     def ingest(self, events) -> None:
-        """Ingest events — convert bench Event dicts to drona format."""
-        # Bench events are dicts or Event dataclass instances
+        """Ingest events — normalize bench field names to drona format."""
         converted = []
         for ev in events:
             if isinstance(ev, dict):
-                converted.append(ev)
+                d = dict(ev)
             else:
-                # Convert dataclass/namedtuple to dict
-                converted.append(
-                    ev.__dict__ if hasattr(ev, "__dict__") else dict(ev)
-                )
+                d = ev.__dict__ if hasattr(ev, "__dict__") else dict(ev)
+
+            # Bench topology events use `from_` (with underscore)
+            # Drona engine expects `from` (without underscore)
+            if d.get("kind") == "topology" and "from_" in d:
+                d["from"] = d.pop("from_")
+
+            converted.append(d)
         self._e.ingest(converted)
 
     def reconstruct_context(self, signal, mode: str = "fast") -> dict:
@@ -67,37 +78,48 @@ class Engine(Adapter):
 
         ctx = self._e.reconstruct_context(drona_signal, mode)
 
-        # Convert Context TypedDict to plain dict for bench harness
-        # Map causal_chain CausalEdge dataclasses to dicts
+        # Convert causal_chain to bench schema:
+        #   bench expects: cause_event_id (str), effect_event_id (str),
+        #                  evidence (str), confidence (float)
         causal_chain = []
         for edge in ctx.get("causal_chain", []):
-            if hasattr(edge, "__dict__"):
+            if hasattr(edge, "cause_id"):
+                # Convert evidence list to a summary string
+                ev_str = ""
+                if edge.evidence:
+                    parts = []
+                    for e in edge.evidence[:2]:
+                        if isinstance(e, dict):
+                            parts.append(
+                                f"{e.get('kind', '?')}@{e.get('ts', '?')}"
+                            )
+                    ev_str = "; ".join(parts)
                 causal_chain.append({
-                    "cause_id": edge.cause_id,
-                    "effect_id": edge.effect_id,
-                    "evidence": edge.evidence,
+                    "cause_event_id": edge.cause_id,
+                    "effect_event_id": edge.effect_id,
+                    "evidence": ev_str,
                     "confidence": edge.confidence,
-                    "relationship": edge.relationship,
                 })
             else:
                 causal_chain.append(edge)
 
-        # Map similar_past_incidents IncidentMatch dataclasses to dicts
+        # Convert similar_past_incidents to bench schema:
+        #   bench expects: incident_id (str), similarity (float), rationale (str)
         similar = []
         for m in ctx.get("similar_past_incidents", []):
-            if hasattr(m, "__dict__"):
+            if hasattr(m, "past_incident_id"):
                 similar.append({
-                    "past_incident_id": m.past_incident_id,
+                    "incident_id": m.past_incident_id,
                     "similarity": m.similarity,
                     "rationale": m.rationale,
                 })
             else:
                 similar.append(m)
 
-        # Map suggested_remediations Remediation dataclasses to dicts
+        # Convert suggested_remediations to bench schema
         remediations = []
         for r in ctx.get("suggested_remediations", []):
-            if hasattr(r, "__dict__"):
+            if hasattr(r, "action"):
                 remediations.append({
                     "action": r.action,
                     "target": r.target,
