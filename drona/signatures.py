@@ -12,6 +12,8 @@ def extract_signature(
     anomalies: list[dict],
     identity_layer: IdentityLayer,
     deploy_ts: str | None = None,
+    graph=None,
+    primary_cid: str = "",
 ) -> BehaviorPattern:
     """Extract a service-name-agnostic behavioral signature from events and anomalies."""
 
@@ -19,7 +21,9 @@ def extract_signature(
     trigger_type = _detect_trigger(events)
 
     # Step 2 — symptom_sequence (ordered by anomaly timestamp, dedup consecutive)
-    symptom_sequence = _build_symptom_sequence(anomalies)
+    symptom_sequence = _build_symptom_sequence(
+        anomalies, identity_layer, graph, primary_cid
+    )
 
     # Step 3 — affected_service_count
     affected_service_count = _count_affected_services(events, anomalies, identity_layer)
@@ -42,6 +46,24 @@ def extract_signature(
     )
 
 
+def _get_topology_role(svc_cid: str, primary_cid: str, graph) -> str:
+    """Determine topology role of a service relative to the incident epicentre.
+
+    ORIGIN     — the incident service itself
+    UPSTREAM   — services that call the incident service (predecessors)
+    DOWNSTREAM — services the incident service depends on (successors)
+    PERIPHERAL — everything else
+    """
+    if not primary_cid or svc_cid == primary_cid:
+        return "ORIGIN"
+    if graph:
+        if svc_cid in graph.get_upstream(primary_cid):
+            return "UPSTREAM"
+        if svc_cid in graph.get_downstream(primary_cid):
+            return "DOWNSTREAM"
+    return "PERIPHERAL"
+
+
 def _detect_trigger(events: list[dict]) -> TriggerType:
     """Determine trigger type from events."""
     for e in events:
@@ -62,37 +84,53 @@ def _detect_trigger(events: list[dict]) -> TriggerType:
     return TriggerType.UNKNOWN
 
 
-def _build_symptom_sequence(anomalies: list[dict]) -> list[SymptomType]:
-    """Build ordered, deduplicated symptom sequence from anomalies."""
+def _build_symptom_sequence(
+    anomalies: list[dict],
+    identity_layer: IdentityLayer,
+    graph=None,
+    primary_cid: str = "",
+) -> list[str]:
+    """Build ordered, role-tagged symptom sequence from anomalies.
+
+    Each element looks like "LATENCY_SPIKE:ORIGIN" or "ERROR_RATE_SPIKE:UPSTREAM".
+    """
     sorted_anomalies = sorted(
         anomalies,
         key=lambda a: a.get("event", {}).get("ts", ""),
     )
 
-    raw_symptoms: list[SymptomType] = []
+    raw_symptoms: list[str] = []
     for a in sorted_anomalies:
         atype = a.get("type", "")
         event = a.get("event", {})
 
+        # Determine topology role for this event's service
+        svc = event.get("service") or event.get("svc") or ""
+        if svc and identity_layer:
+            svc_cid = identity_layer.resolve(svc)
+            role = _get_topology_role(svc_cid, primary_cid, graph)
+        else:
+            role = "PERIPHERAL"
+
         if atype == "metric_spike":
             name = str(event.get("name", "")).lower()
             if "latency" in name:
-                raw_symptoms.append(SymptomType.LATENCY_SPIKE)
+                raw_symptoms.append(f"LATENCY_SPIKE:{role}")
             elif "error" in name:
-                raw_symptoms.append(SymptomType.ERROR_RATE_SPIKE)
+                raw_symptoms.append(f"ERROR_RATE_SPIKE:{role}")
             else:
-                raw_symptoms.append(SymptomType.LATENCY_SPIKE)
+                raw_symptoms.append(f"LATENCY_SPIKE:{role}")
         elif atype == "error_log":
             msg = str(event.get("msg", "")).lower()
             if "timeout" in msg:
-                raw_symptoms.append(SymptomType.UPSTREAM_TIMEOUT)
+                raw_symptoms.append(f"UPSTREAM_TIMEOUT:{role}")
             else:
-                raw_symptoms.append(SymptomType.ERROR_RATE_SPIKE)
+                raw_symptoms.append(f"ERROR_RATE_SPIKE:{role}")
         elif atype == "trace_slowdown":
-            raw_symptoms.append(SymptomType.TRACE_SLOWDOWN)
+            raw_symptoms.append(f"TRACE_SLOWDOWN:{role}")
 
     # Dedup consecutive duplicates
-    deduped: list[SymptomType] = []
+    deduped: list[str] = []
     for s in raw_symptoms:
         if not deduped or deduped[-1] != s:
             deduped.append(s)

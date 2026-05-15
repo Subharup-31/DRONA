@@ -77,7 +77,7 @@ class PropagationDir(str, Enum):
 class BehaviorPattern:
     """Service-name-agnostic incident signature. No canonical_ids inside."""
     trigger_type:            TriggerType
-    symptom_sequence:        list[SymptomType]
+    symptom_sequence:        list[str]   # role-tagged: "SYMPTOM_TYPE:ROLE"
     affected_service_count:  int
     propagation_direction:   PropagationDir
     time_to_first_symptom_s: float
@@ -98,19 +98,36 @@ class BehaviorPattern:
         return round(min(1.0, score), 4)
 
 
+def _symptom_base(s) -> str:
+    """Extract symptom type from role-tagged string like 'LATENCY_SPIKE:ORIGIN'."""
+    return s.split(":")[0] if isinstance(s, str) and ":" in s else str(s)
+
+
 def _lcs_ratio(a: list, b: list) -> float:
-    """Order-aware longest common subsequence ratio."""
+    """Order-aware LCS ratio. For role-tagged symptoms, matches on symptom type
+    prefix (before ':') so that topology role doesn't prevent matching.
+    Gives a small bonus when roles also match exactly.
+    """
     if not a or not b:
         return 0.0
-    m, n = len(a), len(b)
+    a_base = [_symptom_base(x) for x in a]
+    b_base = [_symptom_base(x) for x in b]
+    m, n = len(a_base), len(b_base)
     dp = [[0] * (n + 1) for _ in range(m + 1)]
     for i in range(1, m + 1):
         for j in range(1, n + 1):
             dp[i][j] = (
-                dp[i-1][j-1] + 1 if a[i-1] == b[j-1]
+                dp[i-1][j-1] + 1 if a_base[i-1] == b_base[j-1]
                 else max(dp[i-1][j], dp[i][j-1])
             )
-    return dp[m][n] / max(m, n)
+    base_ratio = dp[m][n] / max(m, n)
+
+    # Small bonus for exact role matches (both symptom + role identical)
+    if base_ratio > 0:
+        exact = sum(1 for x in a if x in b)
+        role_bonus = 0.15 * (exact / max(m, n))
+        return min(1.0, base_ratio + role_bonus)
+    return base_ratio
 
 
 # ─── INCIDENT MEMORY ──────────────────────────────────────────────────────────

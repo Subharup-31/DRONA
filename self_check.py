@@ -78,6 +78,13 @@ SECOND_WAVE = [
         "to": "billing-svc",
     },
     {
+        "ts": "2026-05-11T10:00:01Z",
+        "kind": "topology",
+        "change": "dependency_add",
+        "from": "checkout-api",
+        "to": "billing-svc",
+    },
+    {
         "ts": "2026-05-11T10:00:05Z",
         "kind": "deploy",
         "service": "billing-svc",
@@ -89,7 +96,7 @@ SECOND_WAVE = [
         "kind": "metric",
         "service": "billing-svc",
         "name": "latency_p99_ms",
-        "value": 5100,
+        "value": 15000,
     },
     {
         "ts": "2026-05-11T10:01:00Z",
@@ -97,6 +104,16 @@ SECOND_WAVE = [
         "service": "checkout-api",
         "level": "error",
         "msg": "timeout calling billing-svc",
+    },
+    {
+        "ts": "2026-05-11T10:01:10Z",
+        "kind": "trace",
+        "service": "checkout-api",
+        "trace_id": "xyz-456",
+        "spans": [
+            {"svc": "checkout-api", "op": "POST /checkout", "dur_ms": 5500},
+            {"svc": "billing-svc", "op": "charge", "dur_ms": 5200},
+        ],
     },
     {
         "ts": "2026-05-11T10:01:30Z",

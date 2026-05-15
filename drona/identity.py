@@ -42,17 +42,50 @@ class IdentityLayer:
             return cid
 
     def handle_rename(self, old_name: str, new_name: str) -> str:
-        """Adds new_name as alias to existing node. canonical_id unchanged."""
+        """Adds new_name as alias to existing node. Merges nodes transitively.
+
+        If new_name already maps to a different canonical_id, all aliases from
+        that node are merged into old_name's node.  A visited set prevents
+        infinite loops on circular rename chains.
+        """
         with self._lock:
             if old_name not in self._alias_to_cid:
                 self.resolve(old_name)
-            cid = self._alias_to_cid[old_name]
-            node = self._nodes[cid]
-            if new_name not in node.aliases:
-                node.aliases.append(new_name)
-            self._alias_to_cid[new_name] = cid
-            node.last_seen = _now()
-            return cid
+            primary_cid = self._alias_to_cid[old_name]
+            primary_node = self._nodes[primary_cid]
+
+            # Transitive merge: if new_name already tracked under a different CID
+            visited: set[str] = {primary_cid}
+            merge_queue: list[str] = []
+
+            if new_name in self._alias_to_cid:
+                other_cid = self._alias_to_cid[new_name]
+                if other_cid != primary_cid and other_cid not in visited:
+                    merge_queue.append(other_cid)
+                    visited.add(other_cid)
+
+            # Keep merging until no more chains remain
+            while merge_queue:
+                other_cid = merge_queue.pop()
+                other_node = self._nodes.pop(other_cid, None)
+                if other_node is None:
+                    continue
+                for alias in other_node.aliases:
+                    if alias not in primary_node.aliases:
+                        primary_node.aliases.append(alias)
+                    # Check if this alias itself points to yet another CID
+                    mapped = self._alias_to_cid.get(alias)
+                    if mapped and mapped != primary_cid and mapped not in visited:
+                        merge_queue.append(mapped)
+                        visited.add(mapped)
+                    self._alias_to_cid[alias] = primary_cid
+
+            # Finally, register new_name under primary
+            if new_name not in primary_node.aliases:
+                primary_node.aliases.append(new_name)
+            self._alias_to_cid[new_name] = primary_cid
+            primary_node.last_seen = _now()
+            return primary_cid
 
     def handle_dependency_shift(
         self, source: str, target: str, change: str, ts: str
@@ -108,4 +141,25 @@ if __name__ == "__main__":
     )
     assert src == cid3, f"FAIL: src={src} != cid3={cid3}"
     assert dst == cid1, f"FAIL: dst={dst} != cid1={cid1}"
+
+    # Transitive rename chain test: pay-service → payments-svc → billing-svc
+    il2 = IdentityLayer()
+    c1 = il2.resolve("pay-service")
+    il2.handle_rename("pay-service", "payments-svc")
+    il2.handle_rename("payments-svc", "billing-svc")
+    c2 = il2.resolve("billing-svc")
+    c3 = il2.resolve("pay-service")
+    assert c1 == c2 == c3, f"FAIL: transitive chain broke: {c1} vs {c2} vs {c3}"
+    aliases = il2.all_aliases(c1)
+    for name in ("pay-service", "payments-svc", "billing-svc"):
+        assert name in aliases, f"FAIL: {name} not in aliases after transitive chain"
+
+    # Out-of-order rename merge test
+    il3 = IdentityLayer()
+    ca = il3.resolve("svc-a")
+    cb = il3.resolve("svc-b")
+    assert ca != cb, "FAIL: different services got same canonical_id"
+    il3.handle_rename("svc-a", "svc-b")  # should merge svc-b's node into svc-a's
+    assert il3.resolve("svc-a") == il3.resolve("svc-b"), "FAIL: out-of-order merge failed"
+
     print("identity: all tests passed")

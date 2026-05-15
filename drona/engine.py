@@ -121,7 +121,7 @@ class Engine:
                 anomalies = self._index.get_anomalies(
                     opened_ts - timedelta(minutes=10), ts
                 )
-                self._memory.close_incident(iid, event, anomalies, self._identity)
+                self._memory.close_incident(iid, event, anomalies, self._identity, self._graph)
 
         return self._index.build_row(cid, event, ts)
 
@@ -156,11 +156,20 @@ class Engine:
         chain = build_causal_chain(related, anomalies, self._identity)
         self._graph.add_causal_edges(chain)
 
-        # 4. Behavioral signature — no service names
+        # 4. Behavioral signature — uses topology roles, not service names
+        svc_raw = (
+            signal.service
+            or self._extract_svc_from_trigger(signal.trigger)
+            or "__unknown__"
+        )
+        primary_cid = self._identity.resolve(svc_raw)
         deploy_ts = next(
             (e["ts"] for e in related if e.get("kind") == "deploy"), None
         )
-        sig = extract_signature(related, anomalies, self._identity, deploy_ts)
+        sig = extract_signature(
+            related, anomalies, self._identity, deploy_ts,
+            self._graph, primary_cid,
+        )
 
         # 5. Similar past incidents (topology-independent) — G4: query_ts for recency decay
         scored = self._memory.find_similar(sig, top_k=5, query_ts=signal.ts)
@@ -241,7 +250,7 @@ class Engine:
         overlap = set(current.symptom_sequence) & set(past.symptom_sequence)
         if overlap:
             parts.append(
-                f"shared symptoms: {', '.join(s.value for s in overlap)}"
+                f"shared symptoms: {', '.join(sorted(overlap))}"
             )
         if current.propagation_direction == past.propagation_direction:
             parts.append(

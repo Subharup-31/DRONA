@@ -3,7 +3,14 @@ from __future__ import annotations
 import duckdb
 import json
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _to_naive_utc(dt: datetime) -> datetime:
+    """Convert tz-aware datetime to naive UTC for DuckDB TIMESTAMP comparison."""
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 class TemporalIndex:
@@ -87,7 +94,7 @@ class TemporalIndex:
         with self._lock:
             result = self.db.execute(
                 "SELECT raw FROM events WHERE ts BETWEEN ? AND ? ORDER BY ts",
-                [start, end],
+                [_to_naive_utc(start), _to_naive_utc(end)],
             ).fetchall()
         return [json.loads(row[0]) for row in result]
 
@@ -98,7 +105,7 @@ class TemporalIndex:
         with self._lock:
             result = self.db.execute(
                 "SELECT raw FROM events WHERE canonical_id=? AND ts BETWEEN ? AND ? ORDER BY ts",
-                [canonical_id, start, end],
+                [canonical_id, _to_naive_utc(start), _to_naive_utc(end)],
             ).fetchall()
         return [json.loads(row[0]) for row in result]
 
@@ -110,7 +117,7 @@ class TemporalIndex:
             result = self.db.execute(
                 "SELECT raw, anomaly_type FROM events "
                 "WHERE is_anomaly=TRUE AND ts BETWEEN ? AND ? ORDER BY ts",
-                [start, end],
+                [_to_naive_utc(start), _to_naive_utc(end)],
             ).fetchall()
         return [
             {"event": json.loads(row[0]), "type": row[1]}

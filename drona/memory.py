@@ -46,14 +46,14 @@ class IncrementalClassifier:
 
     def _encode(self, sig: BehaviorPattern) -> np.ndarray:
         """Encode a BehaviorPattern as a fixed-length 8-dim numeric vector."""
-        syms = set(sig.symptom_sequence)
+        sym_strs = set(sig.symptom_sequence)
         return np.array([
             self._TRIGGER_MAP.get(sig.trigger_type, 3),
             min(len(sig.symptom_sequence), 5),
-            1 if SymptomType.LATENCY_SPIKE in syms else 0,
-            1 if SymptomType.ERROR_RATE_SPIKE in syms else 0,
-            1 if SymptomType.UPSTREAM_TIMEOUT in syms else 0,
-            1 if SymptomType.TRACE_SLOWDOWN in syms else 0,
+            1 if any(s.startswith("LATENCY_SPIKE") for s in sym_strs) else 0,
+            1 if any(s.startswith("ERROR_RATE_SPIKE") for s in sym_strs) else 0,
+            1 if any(s.startswith("UPSTREAM_TIMEOUT") for s in sym_strs) else 0,
+            1 if any(s.startswith("TRACE_SLOWDOWN") for s in sym_strs) else 0,
             self._PROP_MAP.get(sig.propagation_direction, 1),
             min(sig.time_to_first_symptom_s, 600.0),
         ], dtype=np.float64)
@@ -150,6 +150,7 @@ class MemoryStore:
         remediation_event: dict,
         anomalies: list[dict],
         identity_layer: IdentityLayer,
+        graph=None,
     ) -> IncidentMemory | None:
         """Close an incident and store it as memory."""
         with self._lock:
@@ -158,7 +159,8 @@ class MemoryStore:
                 return None
 
             sig = extract_signature(
-                state["events"], anomalies, identity_layer, state["deploy_ts"]
+                state["events"], anomalies, identity_layer, state["deploy_ts"],
+                graph, state["primary_cid"],
             )
             target_svc = remediation_event.get("target", "")
             target_cid = (
@@ -200,7 +202,7 @@ class MemoryStore:
         top_k: int = 5,
         query_ts: str | None = None,
     ) -> list[tuple[float, IncidentMemory]]:
-        """Find similar past incidents with recency decay (G4)."""
+        """Find similar past incidents. Hard cutoff at 0.40, max 5 results."""
         with self._lock:
             scored: list[tuple[float, IncidentMemory]] = []
             for mem in self._incidents:
@@ -214,25 +216,16 @@ class MemoryStore:
                 else:
                     blended = base_sim
 
-                if blended <= 0.25:
+                # Hard cutoff: below 0.40 returns 0.0
+                if blended < 0.40:
                     continue
 
-                # G4: recency decay — half-life 3 simulated days, affects 30% of score
-                sim = blended
-                if query_ts and mem.closed_at:
-                    try:
-                        age_days = (
-                            parse_dt(query_ts) - parse_dt(mem.closed_at)
-                        ).total_seconds() / 86400
-                        decay = 0.5 ** (age_days / 3.0)
-                        sim = blended * (0.70 + 0.30 * decay)
-                    except Exception:
-                        sim = blended
+                scored.append((round(blended, 4), mem))
 
-                scored.append((round(sim, 4), mem))
-
+            # Never return 0.0 scores, never more than 5 results
+            scored = [(s, m) for s, m in scored if s > 0.0]
             scored.sort(key=lambda x: x[0], reverse=True)
-            return scored[:top_k]
+            return scored[:min(top_k, 5)]
 
     def get_remediation_suggestions(
         self,
