@@ -51,6 +51,7 @@ class Context(TypedDict):
     suggested_remediations: list[Remediation]
     confidence:             float
     explain:                str
+    debug_matches:          list[dict]
 
 
 # ─── BEHAVIORAL SIGNATURE ─────────────────────────────────────────────────────
@@ -143,3 +144,5 @@ class IncidentMemory:
     opened_at:              str
     closed_at:              str
     context_events:         list[Event]
+    metric_names:           list[str] = field(default_factory=list)
+    error_patterns:         list[str] = field(default_factory=list)

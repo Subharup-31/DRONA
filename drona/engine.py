@@ -6,7 +6,7 @@ from drona.schema import (
 )
 from drona.identity import IdentityLayer
 from drona.temporal_index import TemporalIndex
-from drona.memory import MemoryStore
+from drona.memory import MemoryStore, extract_match_features
 from drona.causal import build_causal_chain
 from drona.signatures import extract_signature
 from drona.graph import ServiceGraph
@@ -94,7 +94,7 @@ class Engine:
         # Open incident
         elif kind == "incident_signal":
             self._flush_buffer()
-            window_start = ts - timedelta(minutes=15)
+            window_start = ts - timedelta(minutes=35)
             pre_events = self._index.query_window_all(window_start, ts)
             # Find most recent deploy in pre-window
             deploy_ts = None
@@ -132,7 +132,7 @@ class Engine:
     ) -> Context:
         """Reconstruct incident context. fast < 2s p95. deep < 6s p95."""
         ts = parse_dt(signal.ts)
-        window_start = ts - timedelta(minutes=15)
+        window_start = ts - timedelta(minutes=35)
         window_end = ts + timedelta(minutes=2)
 
         # 1. Collect window events
@@ -170,9 +170,16 @@ class Engine:
             related, anomalies, self._identity, deploy_ts,
             self._graph, primary_cid,
         )
+        match_features = extract_match_features(related, anomalies)
 
         # 5. Similar past incidents (topology-independent) — G4: query_ts for recency decay
-        scored = self._memory.find_similar(sig, top_k=5, query_ts=signal.ts)
+        scored = self._memory.find_similar(
+            sig,
+            top_k=5,
+            query_ts=signal.ts,
+            primary_cid=primary_cid,
+            query_features=match_features,
+        )
         similar = [
             IncidentMatch(
                 past_incident_id=mem.incident_id,
@@ -192,6 +199,12 @@ class Engine:
 
         # 8. Explain
         explain = generate_explain(related, chain, similar, mode, self._identity)
+        debug_matches = self._memory.debug_candidates(
+            sig,
+            top_k=15,
+            primary_cid=primary_cid,
+            query_features=match_features,
+        )
 
         return Context(
             related_events=related,
@@ -200,6 +213,7 @@ class Engine:
             suggested_remediations=remediations,
             confidence=confidence,
             explain=explain,
+            debug_matches=debug_matches,
         )
 
     def _rank_related(

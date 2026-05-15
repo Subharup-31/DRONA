@@ -6,3 +6,9 @@ __pycache__/
 report.json
 *.db
 .gemini/
+
+# Node dependencies
+node_modules/
+.next/
+dist/
+build/

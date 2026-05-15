@@ -6,11 +6,13 @@ from drona.schema import (
 )
 from drona.signatures import extract_signature
 from drona.identity import IdentityLayer
+from drona.vector_store import FingerprintVectorStore
 from dateutil.parser import parse as parse_dt
 from sklearn.linear_model import SGDClassifier
 from sklearn.preprocessing import StandardScaler
 import numpy as np
 import threading
+import re
 
 
 class IncrementalClassifier:
@@ -114,6 +116,7 @@ class MemoryStore:
         self._open: dict[str, dict] = {}
         self._lock = threading.RLock()
         self._clf = IncrementalClassifier()
+        self._vectors = FingerprintVectorStore()
 
     def open_incident(
         self,
@@ -168,6 +171,7 @@ class MemoryStore:
                 if target_svc
                 else state["primary_cid"]
             )
+            features = extract_match_features(state["events"], anomalies)
 
             mem = IncidentMemory(
                 incident_id=incident_id,
@@ -179,8 +183,11 @@ class MemoryStore:
                 opened_at=state["opened_at"],
                 closed_at=remediation_event.get("ts", ""),
                 context_events=state["events"],
+                metric_names=features["metric_names"],
+                error_patterns=features["error_patterns"],
             )
             self._incidents.append(mem)
+            self._vectors.upsert(mem.incident_id, mem.signature)
 
             # Build training pairs for incremental classifier
             # Positive pair: incidents with same remediation action (heuristic for same family)
@@ -201,10 +208,17 @@ class MemoryStore:
         signature: BehaviorPattern,
         top_k: int = 5,
         query_ts: str | None = None,
+        primary_cid: str | None = None,
+        query_features: dict | None = None,
     ) -> list[tuple[float, IncidentMemory]]:
-        """Find similar past incidents. Hard cutoff at 0.40, max 5 results."""
+        """Find similar past incidents. Hard cutoff at 0.40, max 5 results.
+
+        The behavioral signature intentionally ignores service names so recall
+        survives rename events. For precision, we separately use the stable
+        canonical epicentre when it is available.
+        """
         with self._lock:
-            scored: list[tuple[float, IncidentMemory]] = []
+            candidates: list[tuple[float, float, IncidentMemory, dict]] = []
             for mem in self._incidents:
                 base_sim = signature.similarity(mem.signature)
 
@@ -220,12 +234,126 @@ class MemoryStore:
                 if blended < 0.40:
                     continue
 
-                scored.append((round(blended, 4), mem))
+                vector_sim = self._vectors.similarity(mem.incident_id, signature)
+                components = {
+                    "behavior": round(blended, 4),
+                    "vector": round(vector_sim, 4),
+                    "same_epicentre": bool(
+                        primary_cid and mem.epicentre_canonical_id == primary_cid
+                    ),
+                    "affected_delta": abs(
+                        max(1, signature.affected_service_count)
+                        - max(1, mem.signature.affected_service_count)
+                    ),
+                    "metric_overlap": _overlap(
+                        query_features.get("metric_names", []) if query_features else [],
+                        mem.metric_names,
+                    ),
+                    "error_overlap": _overlap(
+                        query_features.get("error_patterns", []) if query_features else [],
+                        mem.error_patterns,
+                    ),
+                    "deploy_timing_match": _timing_match(
+                        signature.time_to_first_symptom_s,
+                        mem.signature.time_to_first_symptom_s,
+                    ),
+                }
+                rerank = blended
+                if components["same_epicentre"]:
+                    rerank += 0.10
 
-            # Never return 0.0 scores, never more than 5 results
-            scored = [(s, m) for s, m in scored if s > 0.0]
-            scored.sort(key=lambda x: x[0], reverse=True)
-            return scored[:min(top_k, 5)]
+                # Prefer incidents with a similar blast radius when broad
+                # latency/timeout symptoms would otherwise tie many families.
+                count_delta = components["affected_delta"]
+                if count_delta == 0:
+                    rerank += 0.03
+                elif count_delta >= 3:
+                    rerank *= 0.96
+                if components["metric_overlap"]:
+                    rerank += 0.03
+                if components["error_overlap"]:
+                    rerank += 0.04
+                if components["deploy_timing_match"]:
+                    rerank += 0.02
+
+                # Vector shape is deliberately a sidecar signal, not the
+                # primary matcher. It helps close ties without dominating LCS.
+                rerank += 0.04 * vector_sim
+                candidates.append((blended, round(min(1.0, rerank), 4), mem, components))
+
+            # Two-stage retrieval: broad behavior preserves recall, then the
+            # sidecar/tie-breaker score selects the final top 5.
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            broad = candidates[: max(min(top_k, 5), 15)]
+            broad.sort(key=lambda x: x[1], reverse=True)
+            return [(s, m) for _, s, m, _ in broad[:min(top_k, 5)]]
+
+    def debug_candidates(
+        self,
+        signature: BehaviorPattern,
+        top_k: int = 5,
+        primary_cid: str | None = None,
+        query_features: dict | None = None,
+    ) -> list[dict]:
+        """Return explainable candidate scores for error-analysis tooling."""
+        with self._lock:
+            rows = []
+            for mem in self._incidents:
+                behavior = signature.similarity(mem.signature)
+                clf_score = self._clf.score(signature, mem.signature) if self._clf.is_ready() else 0.5
+                blended = 0.80 * behavior + 0.20 * clf_score if self._clf.is_ready() else behavior
+                if blended < 0.40:
+                    continue
+                vector_sim = self._vectors.similarity(mem.incident_id, signature)
+                same_epicentre = bool(primary_cid and mem.epicentre_canonical_id == primary_cid)
+                affected_delta = abs(
+                    max(1, signature.affected_service_count)
+                    - max(1, mem.signature.affected_service_count)
+                )
+                metric_overlap = _overlap(
+                    query_features.get("metric_names", []) if query_features else [],
+                    mem.metric_names,
+                )
+                error_overlap = _overlap(
+                    query_features.get("error_patterns", []) if query_features else [],
+                    mem.error_patterns,
+                )
+                timing_match = _timing_match(
+                    signature.time_to_first_symptom_s,
+                    mem.signature.time_to_first_symptom_s,
+                )
+                rerank = blended
+                if same_epicentre:
+                    rerank += 0.10
+                if affected_delta == 0:
+                    rerank += 0.03
+                elif affected_delta >= 3:
+                    rerank *= 0.96
+                if metric_overlap:
+                    rerank += 0.03
+                if error_overlap:
+                    rerank += 0.04
+                if timing_match:
+                    rerank += 0.02
+                rerank += 0.04 * vector_sim
+                rows.append({
+                    "incident_id": mem.incident_id,
+                    "behavior": round(blended, 4),
+                    "vector": round(vector_sim, 4),
+                    "same_epicentre": same_epicentre,
+                    "affected_delta": affected_delta,
+                    "metric_overlap": metric_overlap,
+                    "error_overlap": error_overlap,
+                    "deploy_timing_match": timing_match,
+                    "rerank": round(min(1.0, rerank), 4),
+                    "trigger_match": signature.trigger_type == mem.signature.trigger_type,
+                    "propagation_match": (
+                        signature.propagation_direction
+                        == mem.signature.propagation_direction
+                    ),
+                })
+            rows.sort(key=lambda row: row["rerank"], reverse=True)
+            return rows[:top_k]
 
     def get_remediation_suggestions(
         self,
@@ -258,3 +386,52 @@ class MemoryStore:
     def open_count(self) -> int:
         """Number of currently open incidents."""
         return len(self._open)
+
+
+def extract_match_features(events: list[dict], anomalies: list[dict]) -> dict[str, list[str]]:
+    metric_names: set[str] = set()
+    error_patterns: set[str] = set()
+    for event in events:
+        if event.get("kind") == "metric" and event.get("name"):
+            metric_names.add(str(event["name"]).lower())
+        if event.get("kind") == "log":
+            pattern = _error_pattern(str(event.get("msg", "")))
+            if pattern:
+                error_patterns.add(pattern)
+    for anomaly in anomalies:
+        event = anomaly.get("event", {})
+        if event.get("kind") == "metric" and event.get("name"):
+            metric_names.add(str(event["name"]).lower())
+        pattern = _error_pattern(str(event.get("msg", "")))
+        if pattern:
+            error_patterns.add(pattern)
+    return {
+        "metric_names": sorted(metric_names),
+        "error_patterns": sorted(error_patterns),
+    }
+
+
+def _error_pattern(message: str) -> str:
+    text = message.lower()
+    if "timeout" in text:
+        return "timeout"
+    if "connection refused" in text:
+        return "connection_refused"
+    if "unavailable" in text:
+        return "unavailable"
+    if "unreachable" in text:
+        return "unreachable"
+    if re.search(r"\b5\d\d\b", text):
+        return "http_5xx"
+    return ""
+
+
+def _overlap(a: list[str], b: list[str]) -> bool:
+    return bool(set(a) & set(b))
+
+
+def _timing_match(a: float, b: float) -> bool:
+    if a <= 0 or b <= 0:
+        return False
+    ratio = max(a, b) / min(a, b)
+    return ratio <= 1.5

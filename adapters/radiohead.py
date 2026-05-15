@@ -136,6 +136,7 @@ class Engine(Adapter):
             "suggested_remediations": remediations,
             "confidence": ctx.get("confidence", 0.0),
             "explain": ctx.get("explain", ""),
+            "debug_matches": ctx.get("debug_matches", []),
         }
 
     def close(self) -> None:

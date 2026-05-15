@@ -1,0 +1,411 @@
+:root {
+  --ink: #111418;
+  --muted: #66717f;
+  --line: #d9e1e8;
+  --paper: #f7f9fb;
+  --panel: #ffffff;
+  --navy: #1d3557;
+  --teal: #2a9d8f;
+  --amber: #e9a23b;
+  --red: #d95d5d;
+  --blue: #457b9d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+main {
+  min-height: 100vh;
+}
+
+nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px clamp(20px, 4vw, 56px);
+}
+
+.brand {
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.navPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.navPills span {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  color: #e8eef4;
+  font-size: 12px;
+  padding: 7px 10px;
+}
+
+.hero {
+  min-height: 92vh;
+  color: #ffffff;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      #162131 0,
+      #162131 72px,
+      #1c2c3f 72px,
+      #1c2c3f 74px
+    );
+}
+
+.heroGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 520px);
+  gap: clamp(28px, 5vw, 72px);
+  align-items: center;
+  padding: clamp(24px, 5vw, 72px) clamp(20px, 4vw, 56px) 72px;
+}
+
+.heroCopy h1 {
+  max-width: 760px;
+  margin: 0;
+  font-size: clamp(44px, 7vw, 88px);
+  line-height: 0.98;
+  letter-spacing: 0;
+}
+
+.eyebrow {
+  margin: 0 0 12px;
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.lede {
+  max-width: 620px;
+  margin: 24px 0 0;
+  color: #d5dee7;
+  font-size: 19px;
+  line-height: 1.6;
+}
+
+.scorePanel,
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.scorePanel {
+  padding: 22px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.18);
+}
+
+.scoreHeader,
+.latencyLine,
+.metricLine,
+.candidateTop,
+.incidentRow,
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.scoreHeader {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+}
+
+.scoreHeader span,
+.latencyLine span,
+.metricLine span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.scoreHeader strong {
+  color: var(--navy);
+  font-size: 40px;
+}
+
+.metricLine {
+  display: grid;
+  grid-template-columns: 110px 1fr 46px;
+  margin: 14px 0;
+}
+
+.meter {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e9eef3;
+}
+
+.meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.good {
+  background: var(--teal);
+}
+
+.warn {
+  background: var(--amber);
+}
+
+.bad {
+  background: var(--red);
+}
+
+.latencyLine {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 16px;
+}
+
+.band,
+.analysisGrid {
+  padding: 56px clamp(20px, 4vw, 56px);
+}
+
+.sectionHeader {
+  margin-bottom: 24px;
+}
+
+.sectionHeader h2 {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 42px);
+  letter-spacing: 0;
+}
+
+.sectionHeader p {
+  max-width: 520px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.compact {
+  margin-bottom: 16px;
+}
+
+.compact h2 {
+  font-size: 24px;
+}
+
+.heatmap {
+  display: grid;
+  grid-template-columns: 120px repeat(4, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.heatHead,
+.heatSeed,
+.heatCell {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-weight: 700;
+}
+
+.heatHead {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.heatSeed,
+.heatCell {
+  border: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.heatCell.good {
+  color: #0f5f55;
+  background: #dff4ee;
+}
+
+.heatCell.warn {
+  color: #7a4d08;
+  background: #fff1cf;
+}
+
+.heatCell.bad {
+  color: #8f2727;
+  background: #fde2e0;
+}
+
+.heatCell.neutral {
+  color: var(--navy);
+  background: #e8f0f6;
+}
+
+.analysisGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+  gap: 20px;
+}
+
+.panel {
+  padding: 22px;
+}
+
+.incidentList,
+.candidateStack,
+.timeline {
+  display: grid;
+  gap: 10px;
+}
+
+.incidentRow {
+  min-height: 44px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.incidentRow span,
+.incidentRow em,
+.candidateTop span,
+.candidateTop em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.incidentRow b {
+  min-width: 48px;
+  border-radius: 999px;
+  color: #ffffff;
+  padding: 5px 8px;
+  text-align: center;
+}
+
+.candidate {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.goodText {
+  color: #0f6b60 !important;
+}
+
+.badText {
+  color: #a33333 !important;
+}
+
+.componentGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.componentGrid span {
+  border-radius: 6px;
+  background: #f1f5f8;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 8px;
+}
+
+.componentGrid b {
+  display: block;
+  color: var(--ink);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.timeline {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.timelineItem {
+  min-height: 132px;
+  border-left: 4px solid var(--blue);
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 14px;
+}
+
+.timelineItem span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.timelineItem strong {
+  display: block;
+  margin: 8px 0;
+  color: var(--navy);
+}
+
+.timelineItem p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.empty {
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  padding: 18px;
+}
+
+@media (max-width: 920px) {
+  .heroGrid,
+  .analysisGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .heatmap {
+    grid-template-columns: 88px repeat(4, minmax(76px, 1fr));
+    overflow-x: auto;
+  }
+
+  .componentGrid,
+  .timeline {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  nav,
+  .sectionHeader,
+  .scoreHeader,
+  .latencyLine {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .metricLine {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .componentGrid,
+  .timeline {
+    grid-template-columns: 1fr;
+  }
+}
