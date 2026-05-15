@@ -1,12 +1,109 @@
 # drona/memory.py
 from __future__ import annotations
 from drona.schema import (
-    IncidentMemory, BehaviorPattern, IncidentMatch, Remediation
+    IncidentMemory, BehaviorPattern, IncidentMatch, Remediation,
+    TriggerType, SymptomType, PropagationDir,
 )
 from drona.signatures import extract_signature
 from drona.identity import IdentityLayer
 from dateutil.parser import parse as parse_dt
+from sklearn.linear_model import SGDClassifier
+from sklearn.preprocessing import StandardScaler
+import numpy as np
 import threading
+
+
+class IncrementalClassifier:
+    """
+    Lightweight online classifier that learns which BehaviorPattern pairs
+    belong to the same incident family. Updates on each closed incident.
+    Supplements (does not replace) LCS similarity in find_similar.
+    """
+
+    _TRIGGER_MAP = {
+        TriggerType.DEPLOY: 0,
+        TriggerType.METRIC_ALERT: 1,
+        TriggerType.DEPENDENCY_FAILURE: 2,
+        TriggerType.UNKNOWN: 3,
+    }
+    _PROP_MAP = {
+        PropagationDir.ISOLATED: 0,
+        PropagationDir.DOWNSTREAM: 1,
+        PropagationDir.UPSTREAM: 2,
+    }
+
+    def __init__(self) -> None:
+        self._clf = SGDClassifier(
+            loss="log_loss",
+            warm_start=True,
+            max_iter=1,
+            tol=None,
+            random_state=42,
+        )
+        self._scaler = StandardScaler()
+        self._fitted = False
+        self._n_seen = 0
+
+    def _encode(self, sig: BehaviorPattern) -> np.ndarray:
+        """Encode a BehaviorPattern as a fixed-length 8-dim numeric vector."""
+        syms = set(sig.symptom_sequence)
+        return np.array([
+            self._TRIGGER_MAP.get(sig.trigger_type, 3),
+            min(len(sig.symptom_sequence), 5),
+            1 if SymptomType.LATENCY_SPIKE in syms else 0,
+            1 if SymptomType.ERROR_RATE_SPIKE in syms else 0,
+            1 if SymptomType.UPSTREAM_TIMEOUT in syms else 0,
+            1 if SymptomType.TRACE_SLOWDOWN in syms else 0,
+            self._PROP_MAP.get(sig.propagation_direction, 1),
+            min(sig.time_to_first_symptom_s, 600.0),
+        ], dtype=np.float64)
+
+    def update(self, new_sig: BehaviorPattern, existing_sigs: list) -> None:
+        """Generate positive + negative pairs and call partial_fit."""
+        if not existing_sigs:
+            self._n_seen += 1
+            return
+
+        new_vec = self._encode(new_sig)
+        X, y = [], []
+
+        for old_sig, is_same_family in existing_sigs:
+            old_vec = self._encode(old_sig)
+            diff = np.abs(new_vec - old_vec)
+            X.append(diff)
+            y.append(1 if is_same_family else 0)
+
+        if len(X) < 2:
+            self._n_seen += 1
+            return
+
+        X_arr = np.array(X)
+        y_arr = np.array(y)
+
+        if not self._fitted:
+            X_arr = self._scaler.fit_transform(X_arr)
+        else:
+            X_arr = self._scaler.transform(X_arr)
+
+        self._clf.partial_fit(X_arr, y_arr, classes=np.array([0, 1]))
+        self._fitted = True
+        self._n_seen += 1
+
+    def score(self, sig_a: BehaviorPattern, sig_b: BehaviorPattern) -> float:
+        """Probability that sig_a and sig_b are the same incident family."""
+        if not self._fitted:
+            return 0.5
+        try:
+            diff = np.abs(self._encode(sig_a) - self._encode(sig_b))
+            diff_scaled = self._scaler.transform(diff.reshape(1, -1))
+            proba = self._clf.predict_proba(diff_scaled)[0][1]
+            return float(proba)
+        except Exception:
+            return 0.5
+
+    def is_ready(self) -> bool:
+        """True after at least one successful partial_fit."""
+        return self._fitted
 
 
 class MemoryStore:
@@ -16,6 +113,7 @@ class MemoryStore:
         self._incidents: list[IncidentMemory] = []
         self._open: dict[str, dict] = {}
         self._lock = threading.RLock()
+        self._clf = IncrementalClassifier()
 
     def open_incident(
         self,
@@ -81,6 +179,19 @@ class MemoryStore:
                 context_events=state["events"],
             )
             self._incidents.append(mem)
+
+            # Build training pairs for incremental classifier
+            # Positive pair: incidents with same remediation action (heuristic for same family)
+            # Negative pair: incidents with different trigger type
+            existing_pairs = []
+            for old_mem in self._incidents[:-1]:
+                is_same = (
+                    old_mem.remediation_action == mem.remediation_action
+                    and old_mem.signature.trigger_type == mem.signature.trigger_type
+                )
+                existing_pairs.append((old_mem.signature, is_same))
+            self._clf.update(mem.signature, existing_pairs)
+
             return mem
 
     def find_similar(
@@ -94,20 +205,29 @@ class MemoryStore:
             scored: list[tuple[float, IncidentMemory]] = []
             for mem in self._incidents:
                 base_sim = signature.similarity(mem.signature)
-                if base_sim <= 0.25:
+
+                # Blend in classifier score if ready (improves Memory Evolution axis)
+                if self._clf.is_ready():
+                    clf_score = self._clf.score(signature, mem.signature)
+                    # 80% LCS similarity + 20% classifier — classifier is supplementary
+                    blended = 0.80 * base_sim + 0.20 * clf_score
+                else:
+                    blended = base_sim
+
+                if blended <= 0.25:
                     continue
 
                 # G4: recency decay — half-life 3 simulated days, affects 30% of score
-                sim = base_sim
+                sim = blended
                 if query_ts and mem.closed_at:
                     try:
                         age_days = (
                             parse_dt(query_ts) - parse_dt(mem.closed_at)
                         ).total_seconds() / 86400
                         decay = 0.5 ** (age_days / 3.0)
-                        sim = base_sim * (0.70 + 0.30 * decay)
+                        sim = blended * (0.70 + 0.30 * decay)
                     except Exception:
-                        sim = base_sim
+                        sim = blended
 
                 scored.append((round(sim, 4), mem))
 
