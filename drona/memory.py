@@ -211,7 +211,7 @@ class MemoryStore:
         primary_cid: str | None = None,
         query_features: dict | None = None,
     ) -> list[tuple[float, IncidentMemory]]:
-        """Find similar past incidents. Hard cutoff at 0.40, max 5 results.
+        """Find similar past incidents. Hard cutoff at 0.25, max 5 results.
 
         The behavioral signature intentionally ignores service names so recall
         survives rename events. For precision, we separately use the stable
@@ -230,8 +230,8 @@ class MemoryStore:
                 else:
                     blended = base_sim
 
-                # Hard cutoff: below 0.40 returns 0.0
-                if blended < 0.40:
+                # Hard cutoff: below 0.25 returns 0.0
+                if blended < 0.25:
                     continue
 
                 vector_sim = self._vectors.similarity(mem.incident_id, signature)
@@ -302,7 +302,7 @@ class MemoryStore:
                 behavior = signature.similarity(mem.signature)
                 clf_score = self._clf.score(signature, mem.signature) if self._clf.is_ready() else 0.5
                 blended = 0.80 * behavior + 0.20 * clf_score if self._clf.is_ready() else behavior
-                if blended < 0.40:
+                if blended < 0.25:
                     continue
                 vector_sim = self._vectors.similarity(mem.incident_id, signature)
                 same_epicentre = bool(primary_cid and mem.epicentre_canonical_id == primary_cid)
